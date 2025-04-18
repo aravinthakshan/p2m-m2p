@@ -1,0 +1,8 @@
+Convert Points to Mask:
+python script.py p2m --json annotations.json --output mask.png --width 512 --height 512
+
+Convert Mask to Points:
+python script.py m2p --mask mask.png --output points.json --density 0.02 --min-points 15 --max-points 150
+
+Convert Mask to Points:
+python script.py sample --output sample_annotations.json
