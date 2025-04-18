@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import random
 
 def points_to_mask(shapes, image_shape, class_colors=None):
     """
@@ -7,7 +8,7 @@ def points_to_mask(shapes, image_shape, class_colors=None):
     
     Args:
         shapes (list): List of shape dictionaries, each containing:
-            - label (str): The class label
+            - label (str): The class label (can be any string like "dog", "cat", "person", etc.)
             - points (list): List of [x, y] coordinates
         image_shape (tuple): (height, width) of the target mask
         class_colors (dict, optional): Dictionary mapping class labels to BGR colors
@@ -19,15 +20,17 @@ def points_to_mask(shapes, image_shape, class_colors=None):
         return None
     
     if class_colors is None:
-        class_colors = {
-            "rectangle": (255, 0, 0),      # Red in BGR
-            "triangle": (0, 255, 0),       # Green in BGR
-            "circle": (0, 0, 255),         # Blue in BGR
-            "polygon": (255, 255, 0),      # Yellow in BGR
-            "ellipse": (255, 0, 255),      # Magenta in BGR
-            "line": (0, 255, 255),         # Cyan in BGR
-            "default": (128, 128, 128)     # Gray in BGR
-        }
+        class_colors = {"default": (128, 128, 128)}  # Gray in BGR for default/unknown classes
+        
+        for shape in shapes:
+            label = shape.get("label", "default")
+            if label not in class_colors:
+                # Generate a random color (BGR format)
+                class_colors[label] = (
+                    random.randint(0, 255),
+                    random.randint(0, 255), 
+                    random.randint(0, 255)
+                )
     
     h, w = image_shape[:2]
     mask = np.zeros((h, w, 3), dtype=np.uint8)
@@ -35,7 +38,15 @@ def points_to_mask(shapes, image_shape, class_colors=None):
     for shape in shapes:
         label = shape.get("label", "default")
         points = shape.get("points", [])
-        color = class_colors.get(label, class_colors["default"])
+        
+        if label not in class_colors:
+            class_colors[label] = (
+                random.randint(0, 255),
+                random.randint(0, 255), 
+                random.randint(0, 255)
+            )
+            
+        color = class_colors[label]
         
         if not points:
             continue
@@ -43,7 +54,6 @@ def points_to_mask(shapes, image_shape, class_colors=None):
         points = np.array(points, dtype=np.int32)
         points = points.reshape((-1, 1, 2))
         
-        # Fill the shape on the mask
         cv2.fillPoly(mask, [points], color)
     
     return mask
@@ -57,7 +67,8 @@ def mask_to_points(mask, point_density=0.01, min_points=10, max_points=100, clas
         point_density (float): Density factor for point generation
         min_points (int): Minimum number of points per shape
         max_points (int): Maximum number of points per shape
-        class_colors (dict, optional): Dictionary mapping class labels to BGR colors
+        class_colors (dict, optional): Dictionary mapping class labels to BGR colors.
+            Should contain mappings for all your custom classes (e.g., "dog", "cat")
             
     Returns:
         list: List of shape dictionaries, each containing:
@@ -68,17 +79,8 @@ def mask_to_points(mask, point_density=0.01, min_points=10, max_points=100, clas
     if mask is None:
         return []
     
-    # Default class colors if not provided
     if class_colors is None:
-        class_colors = {
-            "rectangle": (255, 0, 0),      # Red in BGR
-            "triangle": (0, 255, 0),       # Green in BGR
-            "circle": (0, 0, 255),         # Blue in BGR
-            "polygon": (255, 255, 0),      # Yellow in BGR
-            "ellipse": (255, 0, 255),      # Magenta in BGR
-            "line": (0, 255, 255),         # Cyan in BGR
-            "default": (128, 128, 128)     # Gray in BGR
-        }
+        class_colors = {"default": (128, 128, 128)}
     
     mask_gray = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
     
@@ -86,21 +88,28 @@ def mask_to_points(mask, point_density=0.01, min_points=10, max_points=100, clas
     
     all_shapes = []
     for i, contour in enumerate(contours):
-        # Skip contours that are too small
         if len(contour) < 3:
             continue
             
+        # Sample a point to get the color
         sample_point = tuple(contour[0][0])
-        if 0 <= sample_point[1] < mask.shape[0] and 0 <= sample_point[0] < mask.shape[1]:
+        if (0 <= sample_point[1] < mask.shape[0] and 
+            0 <= sample_point[0] < mask.shape[1]):
             color = tuple(mask[sample_point[1], sample_point[0]])
         else:
             color = class_colors["default"]
         
+        # Find the matching label based on color
         label = "default"
+        closest_color_diff = float('inf')
+        
         for class_name, class_color in class_colors.items():
-            if np.array_equal(color, class_color):
+            # Calculate color difference (simple Euclidean distance in BGR space) --- > for convex contours, might have to be optimized..?
+            # diff = sum((c1 - c2)**2 for c1, c2 in zip(color, class_color)) # overflow error 
+            diff = sum(int((int(c1) - int(c2))**2) for c1, c2 in zip(color, class_color))
+            if diff < closest_color_diff:
+                closest_color_diff = diff
                 label = class_name
-                break
         
         area = cv2.contourArea(contour)
         perimeter = cv2.arcLength(contour, True)
@@ -110,10 +119,12 @@ def mask_to_points(mask, point_density=0.01, min_points=10, max_points=100, clas
         epsilon = 0.01 * perimeter
         approx_contour = cv2.approxPolyDP(contour, epsilon, True)
         
+        # Adjust epsilon to get close to the desired number of points
         while len(approx_contour) > num_points and epsilon < 1.0:
             epsilon *= 1.2
             approx_contour = cv2.approxPolyDP(contour, epsilon, True)
         
+        # If we have too few points, use more points from the original contour
         if len(approx_contour) < num_points and len(contour) > num_points:
             step = len(contour) // num_points
             indices = [i * step for i in range(num_points)]
@@ -129,35 +140,3 @@ def mask_to_points(mask, point_density=0.01, min_points=10, max_points=100, clas
     
     return all_shapes
 
-# Example usage
-if __name__ == "__main__":
-    # Example image dimensions
-    img_height, img_width = 480, 640
-    
-    # Example shapes (polygon points)
-    example_shapes = [
-        {
-            "label": "rectangle",
-            "group_id": 1,
-            "points": [[100, 100], [300, 100], [300, 200], [100, 200]]
-        },
-        {
-            "label": "triangle",
-            "group_id": 2,
-            "points": [[400, 300], [500, 200], [600, 300]]
-        }
-    ]
-    
-    # Convert points to mask
-    mask = points_to_mask(example_shapes, (img_height, img_width))
-    
-    # Convert mask back to points
-    shapes = mask_to_points(mask)
-    
-    print(f"Original shapes: {len(example_shapes)}")
-    print(f"Recovered shapes: {len(shapes)}")
-    
-    # Visualize (optional)
-    # cv2.imshow("Mask", mask)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
